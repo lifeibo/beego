@@ -1,7 +1,10 @@
 package beego
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +22,7 @@ import (
 )
 
 const (
+	// default filter execution points
 	BeforeRouter = iota
 	AfterStatic
 	BeforeExec
@@ -27,7 +31,16 @@ const (
 )
 
 var (
+	// supported http methods.
 	HTTPMETHOD = []string{"get", "post", "put", "delete", "patch", "options", "head"}
+	// these beego.Controller's methods shouldn't reflect to AutoRouter
+	exceptMethod = []string{"Init", "Prepare", "Finish", "Render", "RenderString",
+		"RenderBytes", "Redirect", "Abort", "StopRun", "UrlFor", "ServeJson", "ServeJsonp",
+		"ServeXml", "Input", "ParseForm", "GetString", "GetStrings", "GetInt", "GetBool",
+		"GetFloat", "GetFile", "SaveToFile", "StartSession", "SetSession", "GetSession",
+		"DelSession", "SessionRegenerateID", "DestroySession", "IsAjax", "GetSecureCookie",
+		"SetSecureCookie", "XsrfToken", "CheckXsrfCookie", "XsrfFormHtml",
+		"GetControllerAndAction"}
 )
 
 type controllerInfo struct {
@@ -39,34 +52,35 @@ type controllerInfo struct {
 	hasMethod      bool
 }
 
+// ControllerRegistor containers registered router rules, controller handlers and filters.
 type ControllerRegistor struct {
-	routers       []*controllerInfo // regexp router storage
-	fixrouters    []*controllerInfo // fixed router storage
-	enableFilter  bool
-	filters       map[int][]*FilterRouter
-	enableAuto    bool
-	autoRouter    map[string]map[string]reflect.Type //key:controller key:method value:reflect.type
-	contextBuffer chan *beecontext.Context           //context buffer pool
+	routers      []*controllerInfo // regexp router storage
+	fixrouters   []*controllerInfo // fixed router storage
+	enableFilter bool
+	filters      map[int][]*FilterRouter
+	enableAuto   bool
+	autoRouter   map[string]map[string]reflect.Type //key:controller key:method value:reflect.type
 }
 
+// NewControllerRegistor returns a new ControllerRegistor.
 func NewControllerRegistor() *ControllerRegistor {
 	return &ControllerRegistor{
-		routers:       make([]*controllerInfo, 0),
-		autoRouter:    make(map[string]map[string]reflect.Type),
-		filters:       make(map[int][]*FilterRouter),
-		contextBuffer: make(chan *beecontext.Context, 1000),
+		routers:    make([]*controllerInfo, 0),
+		autoRouter: make(map[string]map[string]reflect.Type),
+		filters:    make(map[int][]*FilterRouter),
 	}
 }
 
-//methods support like this:
-//default methods is the same name as method
-//Add("/user",&UserController{})
-//Add("/api/list",&RestController{},"*:ListFood")
-//Add("/api/create",&RestController{},"post:CreateFood")
-//Add("/api/update",&RestController{},"put:UpdateFood")
-//Add("/api/delete",&RestController{},"delete:DeleteFood")
-//Add("/api",&RestController{},"get,post:ApiFunc")
-//Add("/simple",&SimpleController{},"get:GetFunc;post:PostFunc")
+// Add controller handler and pattern rules to ControllerRegistor.
+// usage:
+//	default methods is the same name as method
+//	Add("/user",&UserController{})
+//	Add("/api/list",&RestController{},"*:ListFood")
+//	Add("/api/create",&RestController{},"post:CreateFood")
+//	Add("/api/update",&RestController{},"put:UpdateFood")
+//	Add("/api/delete",&RestController{},"delete:DeleteFood")
+//	Add("/api",&RestController{},"get,post:ApiFunc")
+//	Add("/simple",&SimpleController{},"get:GetFunc;post:PostFunc")
 func (p *ControllerRegistor) Add(pattern string, c ControllerInterface, mappingMethods ...string) {
 	parts := strings.Split(pattern, "/")
 
@@ -74,7 +88,7 @@ func (p *ControllerRegistor) Add(pattern string, c ControllerInterface, mappingM
 	params := make(map[int]string)
 	for i, part := range parts {
 		if strings.HasPrefix(part, ":") {
-			expr := "(.+)"
+			expr := "(.*)"
 			//a user may choose to override the defult expression
 			// similar to expressjs: ‘/user/:id([0-9]+)’
 			if index := strings.Index(part, "("); index != -1 {
@@ -97,7 +111,7 @@ func (p *ControllerRegistor) Add(pattern string, c ControllerInterface, mappingM
 			j++
 		}
 		if strings.HasPrefix(part, "*") {
-			expr := "(.+)"
+			expr := "(.*)"
 			if part == "*.*" {
 				params[j] = ":path"
 				parts[i] = "([^.]+).([^.]+)"
@@ -212,11 +226,11 @@ func (p *ControllerRegistor) Add(pattern string, c ControllerInterface, mappingM
 	}
 }
 
-// add auto router to controller
-// example beego.AddAuto(&MainContorlller{})
-// MainController has method List and Page
-// you can visit the url /main/list to exec List function
-// /main/page to exec Page function
+// Add auto router to ControllerRegistor.
+// example beego.AddAuto(&MainContorlller{}),
+// MainController has method List and Page.
+// visit the url /main/list to execute List function
+// /main/page to execute Page function.
 func (p *ControllerRegistor) AddAuto(c ControllerInterface) {
 	p.enableAuto = true
 	reflectVal := reflect.ValueOf(c)
@@ -229,12 +243,42 @@ func (p *ControllerRegistor) AddAuto(c ControllerInterface) {
 		p.autoRouter[firstParam] = make(map[string]reflect.Type)
 	}
 	for i := 0; i < rt.NumMethod(); i++ {
-		p.autoRouter[firstParam][rt.Method(i).Name] = ct
+		if !utils.InSlice(rt.Method(i).Name, exceptMethod) {
+			p.autoRouter[firstParam][rt.Method(i).Name] = ct
+		}
 	}
 }
 
-func (p *ControllerRegistor) AddFilter(pattern, action string, filter FilterFunc) {
-	mr := buildFilter(pattern, filter)
+// Add auto router to ControllerRegistor with prefix.
+// example beego.AddAutoPrefix("/admin",&MainContorlller{}),
+// MainController has method List and Page.
+// visit the url /admin/main/list to execute List function
+// /admin/main/page to execute Page function.
+func (p *ControllerRegistor) AddAutoPrefix(prefix string, c ControllerInterface) {
+	p.enableAuto = true
+	reflectVal := reflect.ValueOf(c)
+	rt := reflectVal.Type()
+	ct := reflect.Indirect(reflectVal).Type()
+	firstParam := strings.Trim(prefix, "/") + "/" + strings.ToLower(strings.TrimSuffix(ct.Name(), "Controller"))
+	if _, ok := p.autoRouter[firstParam]; ok {
+		return
+	} else {
+		p.autoRouter[firstParam] = make(map[string]reflect.Type)
+	}
+	for i := 0; i < rt.NumMethod(); i++ {
+		if !utils.InSlice(rt.Method(i).Name, exceptMethod) {
+			p.autoRouter[firstParam][rt.Method(i).Name] = ct
+		}
+	}
+}
+
+// [Deprecated] use InsertFilter.
+// Add FilterFunc with pattern for action.
+func (p *ControllerRegistor) AddFilter(pattern, action string, filter FilterFunc) error {
+	mr, err := buildFilter(pattern, filter)
+	if err != nil {
+		return err
+	}
 	switch action {
 	case "BeforeRouter":
 		p.filters[BeforeRouter] = append(p.filters[BeforeRouter], mr)
@@ -248,14 +292,22 @@ func (p *ControllerRegistor) AddFilter(pattern, action string, filter FilterFunc
 		p.filters[FinishRouter] = append(p.filters[FinishRouter], mr)
 	}
 	p.enableFilter = true
+	return nil
 }
 
-func (p *ControllerRegistor) InsertFilter(pattern string, pos int, filter FilterFunc) {
-	mr := buildFilter(pattern, filter)
+// Add a FilterFunc with pattern rule and action constant.
+func (p *ControllerRegistor) InsertFilter(pattern string, pos int, filter FilterFunc) error {
+	mr, err := buildFilter(pattern, filter)
+	if err != nil {
+		return err
+	}
 	p.filters[pos] = append(p.filters[pos], mr)
 	p.enableFilter = true
+	return nil
 }
 
+// UrlFor does another controller handler in this request function.
+// it can access any controller method.
 func (p *ControllerRegistor) UrlFor(endpoint string, values ...string) string {
 	paths := strings.Split(endpoint, ".")
 	if len(paths) <= 1 {
@@ -371,7 +423,7 @@ func (p *ControllerRegistor) UrlFor(endpoint string, values ...string) string {
 	return ""
 }
 
-// main function to serveHTTP
+// Implement http.Handler interface.
 func (p *ControllerRegistor) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
@@ -392,6 +444,7 @@ func (p *ControllerRegistor) ServeHTTP(rw http.ResponseWriter, r *http.Request) 
 							}
 						}
 						var stack string
+						Critical("the request url is ", r.URL.Path)
 						Critical("Handler crashed with error", err)
 						for i := 1; ; i++ {
 							_, file, line, ok := runtime.Caller(i)
@@ -413,6 +466,7 @@ func (p *ControllerRegistor) ServeHTTP(rw http.ResponseWriter, r *http.Request) 
 							handler(rw, r)
 							return
 						} else {
+							Critical("the request url is ", r.URL.Path)
 							Critical("Handler crashed with error", err)
 							for i := 1; ; i++ {
 								_, file, line, ok := runtime.Caller(i)
@@ -440,31 +494,14 @@ func (p *ControllerRegistor) ServeHTTP(rw http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Server", BeegoServerName)
 
 	// init context
-	var context *beecontext.Context
-	select {
-	case context = <-p.contextBuffer:
-		context.ResponseWriter = w
-		context.Request = r
-		context.Input.Request = r
-	default:
-		context = &beecontext.Context{
-			ResponseWriter: w,
-			Request:        r,
-			Input:          beecontext.NewInput(r),
-			Output:         beecontext.NewOutput(),
-		}
-		context.Output.Context = context
-		context.Output.EnableGzip = EnableGzip
+	context := &beecontext.Context{
+		ResponseWriter: w,
+		Request:        r,
+		Input:          beecontext.NewInput(r),
+		Output:         beecontext.NewOutput(),
 	}
-
-	defer func() {
-		if context != nil {
-			select {
-			case p.contextBuffer <- context:
-			default:
-			}
-		}
-	}()
+	context.Output.Context = context
+	context.Output.EnableGzip = EnableGzip
 
 	if context.Input.IsWebsocket() {
 		context.ResponseWriter = rw
@@ -492,7 +529,9 @@ func (p *ControllerRegistor) ServeHTTP(rw http.ResponseWriter, r *http.Request) 
 	// session init
 	if SessionOn {
 		context.Input.CruSession = GlobalSessions.SessionStart(w, r)
-		defer context.Input.CruSession.SessionRelease()
+		defer func() {
+			context.Input.CruSession.SessionRelease(w)
+		}()
 	}
 
 	if !utils.InSlice(strings.ToLower(r.Method), HTTPMETHOD) {
@@ -573,17 +612,26 @@ func (p *ControllerRegistor) ServeHTTP(rw http.ResponseWriter, r *http.Request) 
 	for _, route := range p.fixrouters {
 		n := len(requestPath)
 		if requestPath == route.pattern {
-			runrouter = route.controllerType
-			findrouter = true
 			runMethod = p.getRunMethod(r.Method, context, route)
-			break
+			if runMethod != "" {
+				runrouter = route.controllerType
+				findrouter = true
+				break
+			}
 		}
-		// pattern /admin   url /admin 200  /admin/ 404
+		// pattern /admin   url /admin 200  /admin/ 200
 		// pattern /admin/  url /admin 301  /admin/ 200
-		if requestPath[n-1] != '/' && len(route.pattern) == n+1 &&
-			route.pattern[n] == '/' && route.pattern[:n] == requestPath {
+		if requestPath[n-1] != '/' && requestPath+"/" == route.pattern {
 			http.Redirect(w, r, requestPath+"/", 301)
 			goto Admin
+		}
+		if requestPath[n-1] == '/' && route.pattern+"/" == requestPath {
+			runMethod = p.getRunMethod(r.Method, context, route)
+			if runMethod != "" {
+				runrouter = route.controllerType
+				findrouter = true
+				break
+			}
 		}
 	}
 
@@ -615,11 +663,13 @@ func (p *ControllerRegistor) ServeHTTP(rw http.ResponseWriter, r *http.Request) 
 				//reassemble query params and add to RawQuery
 				r.URL.RawQuery = url.Values(values).Encode()
 			}
-			runrouter = route.controllerType
-			findrouter = true
-			context.Input.Params = params
 			runMethod = p.getRunMethod(r.Method, context, route)
-			break
+			if runMethod != "" {
+				runrouter = route.controllerType
+				context.Input.Params = params
+				findrouter = true
+				break
+			}
 		}
 	}
 
@@ -770,8 +820,8 @@ Admin:
 	}
 }
 
-// there always should be error handler that sets error code accordingly for all unhandled errors
-// in order to have custom UI for error page it's necessary to override "500" error
+// there always should be error handler that sets error code accordingly for all unhandled errors.
+// in order to have custom UI for error page it's necessary to override "500" error.
 func (p *ControllerRegistor) getErrorHandler(errorCode string) func(rw http.ResponseWriter, r *http.Request) {
 	handler := middleware.SimpleServerError
 	ok := true
@@ -788,6 +838,9 @@ func (p *ControllerRegistor) getErrorHandler(errorCode string) func(rw http.Resp
 	return handler
 }
 
+// returns method name from request header or form field.
+// sometimes browsers can't create PUT and DELETE request.
+// set a form field "_method" instead.
 func (p *ControllerRegistor) getRunMethod(method string, context *beecontext.Context, router *controllerInfo) string {
 	method = strings.ToLower(method)
 	if method == "post" && strings.ToLower(context.Input.Query("_method")) == "put" {
@@ -802,7 +855,7 @@ func (p *ControllerRegistor) getRunMethod(method string, context *beecontext.Con
 		} else if m, ok = router.methods["*"]; ok {
 			return m
 		} else {
-			return strings.Title(method)
+			return ""
 		}
 	} else {
 		return strings.Title(method)
@@ -823,6 +876,7 @@ func (w *responseWriter) Header() http.Header {
 	return w.writer.Header()
 }
 
+// Init content-length header.
 func (w *responseWriter) InitHeadContent(contentlength int64) {
 	if w.contentEncoding == "gzip" {
 		w.Header().Set("Content-Encoding", "gzip")
@@ -834,16 +888,27 @@ func (w *responseWriter) InitHeadContent(contentlength int64) {
 }
 
 // Write writes the data to the connection as part of an HTTP reply,
-// and sets `started` to true
+// and sets `started` to true.
+// started means the response has sent out.
 func (w *responseWriter) Write(p []byte) (int, error) {
 	w.started = true
 	return w.writer.Write(p)
 }
 
 // WriteHeader sends an HTTP response header with status code,
-// and sets `started` to true
+// and sets `started` to true.
 func (w *responseWriter) WriteHeader(code int) {
 	w.status = code
 	w.started = true
 	w.writer.WriteHeader(code)
+}
+
+// hijacker for http
+func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.writer.(http.Hijacker)
+	if !ok {
+		println("supported?")
+		return nil, nil, errors.New("webserver doesn't support hijacking")
+	}
+	return hj.Hijack()
 }

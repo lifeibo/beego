@@ -7,14 +7,17 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/beego/goyaml2"
 )
 
+// YAMLConfig is a yaml config parser and implements Config interface.
 type YAMLConfig struct {
 }
 
+// Parse returns a ConfigContainer with parsed yaml config map.
 func (yaml *YAMLConfig) Parse(filename string) (ConfigContainer, error) {
 	y := &YAMLConfigContainer{
 		data: make(map[string]interface{}),
@@ -27,7 +30,8 @@ func (yaml *YAMLConfig) Parse(filename string) (ConfigContainer, error) {
 	return y, nil
 }
 
-// 从Reader读取YAML
+// Read yaml file to map.
+// if json like, use json package, unless goyaml2 package.
 func ReadYmlReader(path string) (cnf map[string]interface{}, err error) {
 	err = nil
 	f, err := os.Open(path)
@@ -68,11 +72,13 @@ func ReadYmlReader(path string) (cnf map[string]interface{}, err error) {
 	return
 }
 
+// A Config represents the yaml configuration.
 type YAMLConfigContainer struct {
 	data map[string]interface{}
 	sync.Mutex
 }
 
+// Bool returns the boolean value for a given key.
 func (c *YAMLConfigContainer) Bool(key string) (bool, error) {
 	if v, ok := c.data[key].(bool); ok {
 		return v, nil
@@ -80,6 +86,7 @@ func (c *YAMLConfigContainer) Bool(key string) (bool, error) {
 	return false, errors.New("not bool value")
 }
 
+// Int returns the integer value for a given key.
 func (c *YAMLConfigContainer) Int(key string) (int, error) {
 	if v, ok := c.data[key].(int64); ok {
 		return int(v), nil
@@ -87,6 +94,7 @@ func (c *YAMLConfigContainer) Int(key string) (int, error) {
 	return 0, errors.New("not int value")
 }
 
+// Int64 returns the int64 value for a given key.
 func (c *YAMLConfigContainer) Int64(key string) (int64, error) {
 	if v, ok := c.data[key].(int64); ok {
 		return v, nil
@@ -94,6 +102,7 @@ func (c *YAMLConfigContainer) Int64(key string) (int64, error) {
 	return 0, errors.New("not bool value")
 }
 
+// Float returns the float value for a given key.
 func (c *YAMLConfigContainer) Float(key string) (float64, error) {
 	if v, ok := c.data[key].(float64); ok {
 		return v, nil
@@ -101,6 +110,7 @@ func (c *YAMLConfigContainer) Float(key string) (float64, error) {
 	return 0.0, errors.New("not float64 value")
 }
 
+// String returns the string value for a given key.
 func (c *YAMLConfigContainer) String(key string) string {
 	if v, ok := c.data[key].(string); ok {
 		return v
@@ -108,6 +118,12 @@ func (c *YAMLConfigContainer) String(key string) string {
 	return ""
 }
 
+// Strings returns the []string value for a given key.
+func (c *YAMLConfigContainer) Strings(key string) []string {
+	return strings.Split(c.String(key), ";")
+}
+
+// WriteValue writes a new value for key.
 func (c *YAMLConfigContainer) Set(key, val string) error {
 	c.Lock()
 	defer c.Unlock()
@@ -115,6 +131,7 @@ func (c *YAMLConfigContainer) Set(key, val string) error {
 	return nil
 }
 
+// DIY returns the raw value by a given key.
 func (c *YAMLConfigContainer) DIY(key string) (v interface{}, err error) {
 	if v, ok := c.data[key]; ok {
 		return v, nil
