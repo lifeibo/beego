@@ -56,11 +56,10 @@ type managerConfig struct {
 	EnableSetCookie   bool   `json:"enableSetCookie,omitempty"`
 	Gclifetime        int64  `json:"gclifetime"`
 	Maxlifetime       int64  `json:"maxLifetime"`
-	Maxage            int    `json:"maxage"`
 	Secure            bool   `json:"secure"`
 	SessionIDHashFunc string `json:"sessionIDHashFunc"`
 	SessionIDHashKey  string `json:"sessionIDHashKey"`
-	CookieLifeTime    int64  `json:"cookieLifeTime"`
+	CookieLifeTime    int    `json:"cookieLifeTime"`
 	ProviderConfig    string `json:"providerConfig"`
 }
 
@@ -125,8 +124,8 @@ func (manager *Manager) SessionStart(w http.ResponseWriter, r *http.Request) (se
 			Path:     "/",
 			HttpOnly: true,
 			Secure:   manager.config.Secure}
-		if manager.config.Maxage >= 0 {
-			cookie.MaxAge = manager.config.Maxage
+		if manager.config.CookieLifeTime >= 0 {
+			cookie.MaxAge = manager.config.CookieLifeTime
 		}
 		if manager.config.EnableSetCookie {
 			http.SetCookie(w, cookie)
@@ -144,8 +143,8 @@ func (manager *Manager) SessionStart(w http.ResponseWriter, r *http.Request) (se
 				Path:     "/",
 				HttpOnly: true,
 				Secure:   manager.config.Secure}
-			if manager.config.Maxage >= 0 {
-				cookie.MaxAge = manager.config.Maxage
+			if manager.config.CookieLifeTime >= 0 {
+				cookie.MaxAge = manager.config.CookieLifeTime
 			}
 			if manager.config.EnableSetCookie {
 				http.SetCookie(w, cookie)
@@ -174,7 +173,7 @@ func (manager *Manager) SessionDestroy(w http.ResponseWriter, r *http.Request) {
 }
 
 // Get SessionStore by its id.
-func (manager *Manager) GetProvider(sid string) (sessions SessionStore, err error) {
+func (manager *Manager) GetSessionStore(sid string) (sessions SessionStore, err error) {
 	sessions, err = manager.provider.SessionRead(sid)
 	return
 }
@@ -206,8 +205,8 @@ func (manager *Manager) SessionRegenerateId(w http.ResponseWriter, r *http.Reque
 		cookie.HttpOnly = true
 		cookie.Path = "/"
 	}
-	if manager.config.Maxage >= 0 {
-		cookie.MaxAge = manager.config.Maxage
+	if manager.config.CookieLifeTime >= 0 {
+		cookie.MaxAge = manager.config.CookieLifeTime
 	}
 	http.SetCookie(w, cookie)
 	r.AddCookie(cookie)

@@ -97,12 +97,12 @@ func (w *FileLogWriter) Init(jsonconfig string) error {
 	if len(w.Filename) == 0 {
 		return errors.New("jsonconfig must have filename")
 	}
-	err = w.StartLogger()
+	err = w.startLogger()
 	return err
 }
 
 // start file logger. create log file and set to locker-inside file writer.
-func (w *FileLogWriter) StartLogger() error {
+func (w *FileLogWriter) startLogger() error {
 	fd, err := w.createLogFile()
 	if err != nil {
 		return err
@@ -118,9 +118,9 @@ func (w *FileLogWriter) StartLogger() error {
 func (w *FileLogWriter) docheck(size int) {
 	w.startLock.Lock()
 	defer w.startLock.Unlock()
-	if (w.Maxlines > 0 && w.maxlines_curlines >= w.Maxlines) ||
+	if w.Rotate && ((w.Maxlines > 0 && w.maxlines_curlines >= w.Maxlines) ||
 		(w.Maxsize > 0 && w.maxsize_cursize >= w.Maxsize) ||
-		(w.Daily && time.Now().Day() != w.daily_opendate) {
+		(w.Daily && time.Now().Day() != w.daily_opendate)) {
 		if err := w.DoRotate(); err != nil {
 			fmt.Fprintf(os.Stderr, "FileLogWriter(%q): %s\n", w.Filename, err)
 			return
@@ -199,7 +199,7 @@ func (w *FileLogWriter) DoRotate() error {
 		}
 
 		// re-start logger
-		err = w.StartLogger()
+		err = w.startLogger()
 		if err != nil {
 			return fmt.Errorf("Rotate StartLogger: %s\n", err)
 		}

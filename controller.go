@@ -2,11 +2,7 @@ package beego
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha1"
-	"encoding/base64"
 	"errors"
-	"fmt"
 	"html/template"
 	"io"
 	"io/ioutil"
@@ -17,7 +13,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/astaxie/beego/context"
 	"github.com/astaxie/beego/session"
@@ -67,7 +62,6 @@ type ControllerInterface interface {
 
 // Init generates default values of controller operations.
 func (c *Controller) Init(ctx *context.Context, controllerName, actionName string, app interface{}) {
-	c.Data = make(map[interface{}]interface{})
 	c.Layout = ""
 	c.TplNames = ""
 	c.controllerName = controllerName
@@ -291,10 +285,7 @@ func (c *Controller) ServeXml() {
 
 // Input returns the input data map from POST or PUT request body and query string.
 func (c *Controller) Input() url.Values {
-	ct := c.Ctx.Request.Header.Get("Content-Type")
-	if strings.Contains(ct, "multipart/form-data") {
-		c.Ctx.Request.ParseMultipartForm(MaxMemory) //64MB
-	} else {
+	if c.Ctx.Request.Form == nil {
 		c.Ctx.Request.ParseForm()
 	}
 	return c.Ctx.Request.Form
@@ -307,17 +298,17 @@ func (c *Controller) ParseForm(obj interface{}) error {
 
 // GetString returns the input value by key string.
 func (c *Controller) GetString(key string) string {
-	return c.Input().Get(key)
+	return c.Ctx.Input.Query(key)
 }
 
 // GetStrings returns the input string slice by key string.
 // it's designed for multi-value input field such as checkbox(input[type=checkbox]), multi-selection.
 func (c *Controller) GetStrings(key string) []string {
-	r := c.Ctx.Request
-	if r.Form == nil {
+	f := c.Input()
+	if f == nil {
 		return []string{}
 	}
-	vs := r.Form[key]
+	vs := f[key]
 	if len(vs) > 0 {
 		return vs
 	}
@@ -326,17 +317,17 @@ func (c *Controller) GetStrings(key string) []string {
 
 // GetInt returns input value as int64.
 func (c *Controller) GetInt(key string) (int64, error) {
-	return strconv.ParseInt(c.Input().Get(key), 10, 64)
+	return strconv.ParseInt(c.Ctx.Input.Query(key), 10, 64)
 }
 
 // GetBool returns input value as bool.
 func (c *Controller) GetBool(key string) (bool, error) {
-	return strconv.ParseBool(c.Input().Get(key))
+	return strconv.ParseBool(c.Ctx.Input.Query(key))
 }
 
 // GetFloat returns input value as float64.
 func (c *Controller) GetFloat(key string) (float64, error) {
-	return strconv.ParseFloat(c.Input().Get(key), 64)
+	return strconv.ParseFloat(c.Ctx.Input.Query(key), 64)
 }
 
 // GetFile returns the file data in file upload field named as key.
@@ -397,7 +388,9 @@ func (c *Controller) DelSession(name interface{}) {
 // SessionRegenerateID regenerates session id for this session.
 // the session data have no changes.
 func (c *Controller) SessionRegenerateID() {
-	c.CruSession.SessionRelease(c.Ctx.ResponseWriter)
+	if c.CruSession != nil {
+		c.CruSession.SessionRelease(c.Ctx.ResponseWriter)
+	}
 	c.CruSession = GlobalSessions.SessionRegenerateId(c.Ctx.ResponseWriter, c.Ctx.Request)
 	c.Ctx.Input.CruSession = c.CruSession
 }
@@ -415,40 +408,12 @@ func (c *Controller) IsAjax() bool {
 
 // GetSecureCookie returns decoded cookie value from encoded browser cookie values.
 func (c *Controller) GetSecureCookie(Secret, key string) (string, bool) {
-	val := c.Ctx.GetCookie(key)
-	if val == "" {
-		return "", false
-	}
-
-	parts := strings.SplitN(val, "|", 3)
-
-	if len(parts) != 3 {
-		return "", false
-	}
-
-	vs := parts[0]
-	timestamp := parts[1]
-	sig := parts[2]
-
-	h := hmac.New(sha1.New, []byte(Secret))
-	fmt.Fprintf(h, "%s%s", vs, timestamp)
-
-	if fmt.Sprintf("%02x", h.Sum(nil)) != sig {
-		return "", false
-	}
-	res, _ := base64.URLEncoding.DecodeString(vs)
-	return string(res), true
+	return c.Ctx.GetSecureCookie(Secret, key)
 }
 
 // SetSecureCookie puts value into cookie after encoded the value.
-func (c *Controller) SetSecureCookie(Secret, name, val string, age int64) {
-	vs := base64.URLEncoding.EncodeToString([]byte(val))
-	timestamp := strconv.FormatInt(time.Now().UnixNano(), 10)
-	h := hmac.New(sha1.New, []byte(Secret))
-	fmt.Fprintf(h, "%s%s", vs, timestamp)
-	sig := fmt.Sprintf("%02x", h.Sum(nil))
-	cookie := strings.Join([]string{vs, timestamp, sig}, "|")
-	c.Ctx.SetCookie(name, cookie, age, "/")
+func (c *Controller) SetSecureCookie(Secret, name, value string, others ...interface{}) {
+	c.Ctx.SetSecureCookie(Secret, name, value, others...)
 }
 
 // XsrfToken creates a xsrf token string and returns.

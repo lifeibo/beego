@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"database/sql"
 	"fmt"
 	"reflect"
 	"strings"
@@ -79,7 +80,6 @@ func getTableUnique(val reflect.Value) [][]string {
 
 // get snaked column name
 func getColumnName(ft int, addrField reflect.Value, sf reflect.StructField, col string) string {
-	col = strings.ToLower(col)
 	column := col
 	if col == "" {
 		column = snakeString(sf.Name)
@@ -121,12 +121,18 @@ func getFieldType(val reflect.Value) (ft int, err error) {
 		ft = TypeBooleanField
 	case reflect.String:
 		ft = TypeCharField
-	case reflect.Invalid:
 	default:
-		if elm.CanInterface() {
-			if _, ok := elm.Interface().(time.Time); ok {
-				ft = TypeDateTimeField
-			}
+		switch elm.Interface().(type) {
+		case sql.NullInt64:
+			ft = TypeBigIntegerField
+		case sql.NullFloat64:
+			ft = TypeFloatField
+		case sql.NullBool:
+			ft = TypeBooleanField
+		case sql.NullString:
+			ft = TypeCharField
+		case time.Time:
+			ft = TypeDateTimeField
 		}
 	}
 	if ft&IsFieldType == 0 {

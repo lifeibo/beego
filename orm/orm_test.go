@@ -2,6 +2,7 @@ package orm
 
 import (
 	"bytes"
+	"database/sql"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -138,8 +139,17 @@ func throwFailNow(t *testing.T, err error, args ...interface{}) {
 	}
 }
 
+func TestGetDB(t *testing.T) {
+	if db, err := GetDB(); err != nil {
+		throwFailNow(t, err)
+	} else {
+		err = db.Ping()
+		throwFailNow(t, err)
+	}
+}
+
 func TestSyncDb(t *testing.T) {
-	RegisterModel(new(Data), new(DataNull))
+	RegisterModel(new(Data), new(DataNull), new(DataCustom))
 	RegisterModel(new(User))
 	RegisterModel(new(Profile))
 	RegisterModel(new(Post))
@@ -155,7 +165,7 @@ func TestSyncDb(t *testing.T) {
 }
 
 func TestRegisterModels(t *testing.T) {
-	RegisterModel(new(Data), new(DataNull))
+	RegisterModel(new(Data), new(DataNull), new(DataCustom))
 	RegisterModel(new(User))
 	RegisterModel(new(Profile))
 	RegisterModel(new(Post))
@@ -258,12 +268,78 @@ func TestNullDataTypes(t *testing.T) {
 	err = dORM.Read(&d)
 	throwFail(t, err)
 
+	throwFail(t, AssertIs(d.NullBool.Valid, false))
+	throwFail(t, AssertIs(d.NullString.Valid, false))
+	throwFail(t, AssertIs(d.NullInt64.Valid, false))
+	throwFail(t, AssertIs(d.NullFloat64.Valid, false))
+
 	_, err = dORM.Raw(`INSERT INTO data_null (boolean) VALUES (?)`, nil).Exec()
 	throwFail(t, err)
 
 	d = DataNull{Id: 2}
 	err = dORM.Read(&d)
 	throwFail(t, err)
+
+	d = DataNull{
+		DateTime:    time.Now(),
+		NullString:  sql.NullString{"test", true},
+		NullBool:    sql.NullBool{true, true},
+		NullInt64:   sql.NullInt64{42, true},
+		NullFloat64: sql.NullFloat64{42.42, true},
+	}
+
+	id, err = dORM.Insert(&d)
+	throwFail(t, err)
+	throwFail(t, AssertIs(id, 3))
+
+	d = DataNull{Id: 3}
+	err = dORM.Read(&d)
+	throwFail(t, err)
+
+	throwFail(t, AssertIs(d.NullBool.Valid, true))
+	throwFail(t, AssertIs(d.NullBool.Bool, true))
+
+	throwFail(t, AssertIs(d.NullString.Valid, true))
+	throwFail(t, AssertIs(d.NullString.String, "test"))
+
+	throwFail(t, AssertIs(d.NullInt64.Valid, true))
+	throwFail(t, AssertIs(d.NullInt64.Int64, 42))
+
+	throwFail(t, AssertIs(d.NullFloat64.Valid, true))
+	throwFail(t, AssertIs(d.NullFloat64.Float64, 42.42))
+}
+
+func TestDataCustomTypes(t *testing.T) {
+	d := DataCustom{}
+	ind := reflect.Indirect(reflect.ValueOf(&d))
+
+	for name, value := range Data_Values {
+		e := ind.FieldByName(name)
+		if !e.IsValid() {
+			continue
+		}
+		e.Set(reflect.ValueOf(value).Convert(e.Type()))
+	}
+
+	id, err := dORM.Insert(&d)
+	throwFail(t, err)
+	throwFail(t, AssertIs(id, 1))
+
+	d = DataCustom{Id: 1}
+	err = dORM.Read(&d)
+	throwFail(t, err)
+
+	ind = reflect.Indirect(reflect.ValueOf(&d))
+
+	for name, value := range Data_Values {
+		e := ind.FieldByName(name)
+		if !e.IsValid() {
+			continue
+		}
+		vu := e.Interface()
+		value = reflect.ValueOf(value).Convert(e.Type()).Interface()
+		throwFail(t, AssertIs(vu == value, true), value, vu)
+	}
 }
 
 func TestCRUD(t *testing.T) {
@@ -519,6 +595,10 @@ func TestOperators(t *testing.T) {
 	throwFail(t, err)
 	throwFail(t, AssertIs(num, 1))
 
+	num, err = qs.Filter("user_name__exact", String("slene")).Count()
+	throwFail(t, err)
+	throwFail(t, AssertIs(num, 1))
+
 	num, err = qs.Filter("user_name__exact", "slene").Count()
 	throwFail(t, err)
 	throwFail(t, AssertIs(num, 1))
@@ -559,11 +639,11 @@ func TestOperators(t *testing.T) {
 	throwFail(t, err)
 	throwFail(t, AssertIs(num, 3))
 
-	num, err = qs.Filter("status__lt", 3).Count()
+	num, err = qs.Filter("status__lt", Uint(3)).Count()
 	throwFail(t, err)
 	throwFail(t, AssertIs(num, 2))
 
-	num, err = qs.Filter("status__lte", 3).Count()
+	num, err = qs.Filter("status__lte", Int(3)).Count()
 	throwFail(t, err)
 	throwFail(t, AssertIs(num, 3))
 
@@ -617,6 +697,14 @@ func TestOperators(t *testing.T) {
 
 	n1, n2 := 1, 2
 	num, err = qs.Filter("status__in", []*int{&n1}, &n2).Count()
+	throwFail(t, err)
+	throwFail(t, AssertIs(num, 2))
+
+	num, err = qs.Filter("id__between", 2, 3).Count()
+	throwFail(t, err)
+	throwFail(t, AssertIs(num, 2))
+
+	num, err = qs.Filter("id__between", []int{2, 3}).Count()
 	throwFail(t, err)
 	throwFail(t, AssertIs(num, 2))
 }
@@ -1329,7 +1417,7 @@ func TestRawQueryRow(t *testing.T) {
 	)
 
 	cols = []string{
-		"id", "status", "profile_id",
+		"id", "Status", "profile_id",
 	}
 	query = fmt.Sprintf("SELECT %s%s%s FROM %suser%s WHERE id = ?", Q, strings.Join(cols, sep), Q, Q, Q)
 	err = dORM.Raw(query, 4).QueryRow(&uid, &status, &pid)
@@ -1409,7 +1497,7 @@ func TestRawValues(t *testing.T) {
 	Q := dDbBaser.TableQuote()
 
 	var maps []Params
-	query := fmt.Sprintf("SELECT %suser_name%s FROM %suser%s WHERE %sstatus%s = ?", Q, Q, Q, Q, Q, Q)
+	query := fmt.Sprintf("SELECT %suser_name%s FROM %suser%s WHERE %sStatus%s = ?", Q, Q, Q, Q, Q, Q)
 	num, err := dORM.Raw(query, 1).Values(&maps)
 	throwFail(t, err)
 	throwFail(t, AssertIs(num, 1))
@@ -1577,7 +1665,6 @@ func TestDelete(t *testing.T) {
 	throwFail(t, err)
 	throwFail(t, AssertIs(num, 4))
 
-	fmt.Println("...")
 	qs = dORM.QueryTable("comment")
 	num, err = qs.Filter("Post__User", 3).Delete()
 	throwFail(t, err)
@@ -1646,10 +1733,10 @@ func TestTransaction(t *testing.T) {
 func TestReadOrCreate(t *testing.T) {
 	u := &User{
 		UserName: "Kyle",
-		Email: "kylemcc@gmail.com",
+		Email:    "kylemcc@gmail.com",
 		Password: "other_pass",
-		Status: 7,
-		IsStaff: false,
+		Status:   7,
+		IsStaff:  false,
 		IsActive: true,
 	}
 
